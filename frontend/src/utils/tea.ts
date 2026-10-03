@@ -358,11 +358,25 @@ export function matchScoreBand(score: number, bandKeys: string[]): boolean {
 
 /* ----------------------------- 拼配候选 ----------------------------- */
 
-/** 按总分由高到低生成拼配候选清单 */
+/** 按总分由高到低生成拼配候选清单（仅凭证有效的审评入选，按批次去重保留最近一次审评） */
 export function buildBlendCandidates(reviews: Review[], batches: Batch[], gardens: Garden[]): BlendCandidate[] {
   const batchMap = new Map(batches.map((batch) => [batch.id, batch]));
   const gardenMap = new Map(gardens.map((garden) => [garden.id, garden]));
-  return reviews
+  // 工艺参数变更后凭证失效（pending_review）的审评一律撤下拼配候选
+  const latestByBatch = new Map<string, Review>();
+  reviews
+    .filter((review) => review.voucherStatus === 'valid')
+    .forEach((review) => {
+      const prev = latestByBatch.get(review.batchId);
+      if (
+        !prev ||
+        review.reviewedAt > prev.reviewedAt ||
+        (review.reviewedAt === prev.reviewedAt && review.totalScore > prev.totalScore)
+      ) {
+        latestByBatch.set(review.batchId, review);
+      }
+    });
+  return [...latestByBatch.values()]
     .filter((review) => batchMap.has(review.batchId))
     .map((review) => {
       const batch = batchMap.get(review.batchId) as Batch;

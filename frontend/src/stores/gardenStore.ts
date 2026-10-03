@@ -4,6 +4,7 @@
  */
 import { create } from 'zustand';
 import { ALTITUDE_BANDS, type Garden, type GardenDraft, type GardenMetrics } from '../types/garden';
+import type { Review } from '../types/review';
 import {
   ID_PREFIX,
   countAll,
@@ -63,7 +64,21 @@ interface GardenStoreState {
 /** 依据山场 / 批次 / 审评计算指标 */
 async function buildMetrics(gardens: Garden[]): Promise<{ metrics: Record<string, GardenMetrics> }> {
   const [batches, reviews] = await Promise.all([listBatches(), listReviews()]);
-  const scoreByBatch = new Map(reviews.map((review) => [review.batchId, review.totalScore]));
+  // 审评均分只统计凭证有效的审评；待复评（工艺变更）的审评分数仅作留档，不计入均分
+  const latestValidByBatch = new Map<string, Review>();
+  reviews
+    .filter((review) => review.voucherStatus === 'valid')
+    .forEach((review) => {
+      const prev = latestValidByBatch.get(review.batchId);
+      if (
+        !prev ||
+        review.reviewedAt > prev.reviewedAt ||
+        (review.reviewedAt === prev.reviewedAt && review.totalScore > prev.totalScore)
+      ) {
+        latestValidByBatch.set(review.batchId, review);
+      }
+    });
+  const scoreByBatch = new Map([...latestValidByBatch.values()].map((review) => [review.batchId, review.totalScore]));
   const metrics: Record<string, GardenMetrics> = {};
   const scoresByGarden: Record<string, number[]> = {};
 

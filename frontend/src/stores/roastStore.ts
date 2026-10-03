@@ -9,6 +9,7 @@ import type { Garden } from '../types/garden';
 import {
   ID_PREFIX,
   createId,
+  invalidateReviewVouchers,
   listRoasts,
   listRoastsByBatch,
   nowIso,
@@ -106,6 +107,8 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
     };
     await putRoast(row);
     await get().loadRoasts();
+    // 焙火参数变更：该批次审评凭证立即失效，待复评后撤下拼配候选
+    await invalidateReviewVouchers(draft.batchId);
     return row;
   },
 
@@ -123,6 +126,8 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
     };
     await putRoast(next);
     await get().loadRoasts();
+    // 焙火参数变更：该批次审评凭证立即失效
+    await invalidateReviewVouchers(existing.batchId);
   },
 
   async deleteRoast(roastId) {
@@ -134,6 +139,8 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
       await putRoasts(rest.map((roast, index) => ({ ...roast, passNo: index + 1, updatedAt: nowIso() })));
     }
     await get().loadRoasts();
+    // 焙火道次删除：该批次审评凭证立即失效
+    await invalidateReviewVouchers(existing.batchId);
   },
 
   async advanceRoastState(roastId) {
@@ -147,6 +154,8 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
       await useBatchStore.getState().markBatchState(existing.batchId, '已焙火');
     }
     await get().loadRoasts();
+    // 焙火状态推进：该批次审评凭证立即失效
+    await invalidateReviewVouchers(existing.batchId);
     return next;
   },
 
@@ -165,6 +174,8 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
     swapped[swapIndex] = current;
     await putRoasts(swapped.map((roast, order) => ({ ...roast, passNo: order + 1, updatedAt: nowIso() })));
     await get().loadRoasts();
+    // 道次顺序变更（passNo 重排）：该批次审评凭证立即失效
+    await invalidateReviewVouchers(existing.batchId);
   },
 
   async reorderPasses(batchId, orderedIds) {
@@ -180,6 +191,8 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
       .map((roast, index) => ({ ...roast, passNo: index + 1, updatedAt: nowIso() }));
     await putRoasts(reordered);
     await get().loadRoasts();
+    // 道次顺序批量重排（passNo 重排）：该批次审评凭证立即失效
+    await invalidateReviewVouchers(batchId);
   },
 }));
 

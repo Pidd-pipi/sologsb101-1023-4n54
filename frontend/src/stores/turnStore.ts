@@ -5,7 +5,7 @@
  */
 import { create } from 'zustand';
 import { TURN_LIMITS, type Turn, type TurnDraft, type TurnTemplate } from '../types/turn';
-import { ID_PREFIX, createId, listTurnsByBatch, nowIso, putTurn, putTurns, removeTurn } from '../utils/db';
+import { ID_PREFIX, createId, invalidateReviewVouchers, listTurnsByBatch, nowIso, putTurn, putTurns, removeTurn } from '../utils/db';
 import { roundTo } from '../utils/tea';
 import { emptyFilterValue, matchKeyword, pickedSelect, type FilterValue } from '../components/common/FilterBar';
 
@@ -171,6 +171,8 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
     };
     await putTurn(row);
     await get().loadTurns(draft.batchId);
+    // 做青参数变更：该批次审评凭证立即失效，待复评后撤下拼配候选
+    await invalidateReviewVouchers(draft.batchId);
     return row;
   },
 
@@ -188,6 +190,8 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
     };
     await putTurn(next);
     await get().loadTurns(existing.batchId);
+    // 做青参数变更：该批次审评凭证立即失效
+    await invalidateReviewVouchers(existing.batchId);
   },
 
   async deleteTurn(turnId) {
@@ -195,6 +199,8 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
     if (!existing) return;
     await removeTurn(turnId);
     await get().renumber(existing.batchId);
+    // 做青轮次删除：该批次审评凭证立即失效
+    await invalidateReviewVouchers(existing.batchId);
   },
 
   async copyPreviousTurn(batchId) {
@@ -251,6 +257,8 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
       .map((turn, index) => ({ ...turn, roundNo: index + 1, updatedAt: nowIso() }));
     await putTurns(reordered);
     await get().loadTurns(activeBatchId);
+    // 轮次顺序变更（roundNo 重排）：该批次审评凭证立即失效
+    await invalidateReviewVouchers(activeBatchId);
   },
 
   async renumber(batchId) {

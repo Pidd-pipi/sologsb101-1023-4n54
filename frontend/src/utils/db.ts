@@ -18,7 +18,7 @@ import { clampScore, weightedTotalScore } from './tea';
 export const DB_NAME = 'gbtearock';
 
 /** 当前数据结构版本号（每次调整字段结构必须 +1 并补迁移） */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 /** 主键前缀，便于在导出 JSON 里肉眼区分实体 */
 export const ID_PREFIX = {
@@ -55,7 +55,7 @@ class TeaRockDatabase extends Dexie {
     //     1) 补齐 createdAt / updatedAt；2) 山场补齐朝向、土壤与品种兜底值；
     //     3) 批次工序状态归一化；4) 轮次与焙火数值截断到合法区间；
     //     5) 审评总分由「四项简单平均」改为「分项加权换算」，迁移时按新权重重算。
-    this.version(DB_VERSION)
+    this.version(2)
       .stores({
         gardens: 'id, name, cultivar, soil, altitudeM, createdAt, updatedAt',
         batches: 'id, gardenId, pickedAt, state, tenderness, createdAt, updatedAt',
@@ -154,6 +154,31 @@ class TeaRockDatabase extends Dexie {
             });
           });
       });
+
+    // v3：审评凭证绑定茶青批次的当次工艺（做青 / 杀青 / 焙火参数）。
+    //     升级前的历史审评都没有凭证，统一置为「待复评」并清空工艺指纹，
+    //     分数只作留档，不直接沿用；重新审评通过后才恢复 valid。
+    this.version(3)
+      .stores({
+        gardens: 'id, name, cultivar, soil, altitudeM, createdAt, updatedAt',
+        batches: 'id, gardenId, pickedAt, state, tenderness, createdAt, updatedAt',
+        turns: 'id, batchId, roundNo, [batchId+roundNo], createdAt, updatedAt',
+        fixes: 'id, batchId, operator, createdAt, updatedAt',
+        roasts: 'id, batchId, passNo, state, nextRoastDate, createdAt, updatedAt',
+        reviews: 'id, batchId, reviewedAt, totalScore, voucherStatus, createdAt, updatedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<Review, string>('reviews')
+          .toCollection()
+          .modify((row) => {
+            // 旧数据没有凭证字段：置为待复评并清空工艺指纹，分数留档不沿用
+            if (!Object.prototype.hasOwnProperty.call(row, 'voucherStatus')) {
+              row.voucherStatus = 'pending_review';
+              row.processFingerprint = '';
+            }
+          });
+      });
   }
 }
 
@@ -178,6 +203,15 @@ export function createId(prefix: string): string {
       ? cryptoObj.randomUUID().slice(0, 8)
       : Math.random().toString(16).slice(2, 10);
   return `${prefix}-${Date.now().toString(36)}${tail}`;
+}
+
+/** 简单确定性字符串哈希（djb2 变体），用于生成审评凭证的工艺指纹 */
+export function simpleHash(input: string): string {
+  let hash = 5381;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
+  }
+  return `fp-${(hash >>> 0).toString(36)}`;
 }
 
 /** 相对今天偏移若干天的 YYYY-MM-DD（播种复焙提醒用） */
@@ -385,7 +419,7 @@ export async function seedDatabase(): Promise<void> {
     },
   ];
 
-  const reviewSeed: Array<Omit<Review, 'totalScore'>> = [
+  const reviewSeed: Array<Omit<Review, 'totalScore' | 'processFingerprint'>> = [
     {
       id: 'review-niulankeng',
       batchId: 'batch-niulankeng-0426',
@@ -395,6 +429,7 @@ export async function seedDatabase(): Promise<void> {
       taste: 92,
       leafBase: 89,
       blendNote: '拼配方案 A · 占 35%',
+      voucherStatus: 'valid',
       createdAt: stamp,
       updatedAt: stamp,
     },
@@ -407,6 +442,7 @@ export async function seedDatabase(): Promise<void> {
       taste: 87,
       leafBase: 84,
       blendNote: '拼配方案 A · 占 40%',
+      voucherStatus: 'valid',
       createdAt: stamp,
       updatedAt: stamp,
     },
@@ -419,6 +455,7 @@ export async function seedDatabase(): Promise<void> {
       taste: 78,
       leafBase: 79,
       blendNote: '待定，退火后复评',
+      voucherStatus: 'valid',
       createdAt: stamp,
       updatedAt: stamp,
     },
@@ -431,6 +468,12 @@ export async function seedDatabase(): Promise<void> {
       taste: row.taste,
       leafBase: row.leafBase,
     }),
+    // 凭证绑定该批次当次工艺（做青 / 杀青 / 焙火参数）
+    processFingerprint: computeProcessFingerprint(
+      turns.filter((turn) => turn.batchId === row.batchId),
+      fixes.find((fix) => fix.batchId === row.batchId),
+      roasts.filter((roast) => roast.batchId === row.batchId),
+    ),
   }));
 
   await db.transaction('rw', [db.gardens, db.batches, db.turns, db.fixes, db.roasts, db.reviews], async () => {
@@ -620,6 +663,50 @@ export async function putReview(row: Review): Promise<void> {
 
 export async function removeReview(id: string): Promise<void> {
   await db.reviews.delete(id);
+}
+
+/**
+ * 计算茶青批次「当次工艺」的确定性指纹：
+ * 汇总做青轮次（顺序 + 摇青 / 静置 / 室温 / 湿度 / 失水率）、杀青揉捻（锅温 / 时长 / 压力）、
+ * 焙火道次（顺序 + 温度 / 时长 / 炭种 / 状态）参数，任一参数变化都会得到不同指纹。
+ */
+export function computeProcessFingerprint(turns: Turn[], fix: Fix | undefined, roasts: Roast[]): string {
+  const payload = {
+    v: 1,
+    turns: turns.map((turn) => [
+      turn.roundNo,
+      turn.shakeMin,
+      turn.restMin,
+      turn.roomTempC,
+      turn.humidityPct,
+      turn.waterLossPct,
+    ]),
+    fix: fix ? [fix.wokTempC, fix.fixMin, fix.rollPressure, fix.rollMin] : null,
+    roasts: roasts.map((roast) => [roast.passNo, roast.tempC, roast.hours, roast.charcoal, roast.state]),
+  };
+  return simpleHash(JSON.stringify(payload));
+}
+
+/** 读取茶青批次当前的做青 / 杀青 / 焙火参数，计算当次工艺指纹（审评凭证绑定用） */
+export async function getProcessFingerprint(batchId: string): Promise<string> {
+  const [turns, fixes, roasts] = await Promise.all([
+    db.turns.where('batchId').equals(batchId).sortBy('roundNo'),
+    db.fixes.where('batchId').equals(batchId).toArray(),
+    db.roasts.where('batchId').equals(batchId).sortBy('passNo'),
+  ]);
+  return computeProcessFingerprint(turns, fixes[0], roasts);
+}
+
+/**
+ * 工序参数保存后，立即失效该批次的审评凭证：
+ * 把该批次所有审评置为「待复评」，原分保留作留档，从拼配候选撤下；
+ * 只影响这一个茶青批次，不波及其余批次。重新审评（新建审评）后才恢复 valid。
+ */
+export async function invalidateReviewVouchers(batchId: string): Promise<void> {
+  await db.reviews.where('batchId').equals(batchId).modify({
+    voucherStatus: 'pending_review',
+    updatedAt: nowIso(),
+  });
 }
 
 /* ---------------------------- 整库导入导出 ---------------------------- */

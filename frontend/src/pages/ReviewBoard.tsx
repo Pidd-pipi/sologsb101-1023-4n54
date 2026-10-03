@@ -33,7 +33,7 @@ import EmptyPanel from '../components/common/EmptyPanel';
 import { useIdbTable } from '../hooks/useIdbTable';
 import { useGardenStore } from '../stores/gardenStore';
 import { filterReviews, useBatchStore } from '../stores/batchStore';
-import { db } from '../utils/db';
+import { db, getProcessFingerprint } from '../utils/db';
 import {
   BLEND_CANDIDATE_SCORE,
   REVIEW_SCORE_LABEL,
@@ -83,7 +83,10 @@ export default function ReviewBoard() {
 
   const stats = useMemo(() => {
     const scores = rows.map((review) => review.totalScore);
-    const candidates = rows.filter((review) => review.totalScore >= BLEND_CANDIDATE_SCORE).length;
+    // 拼配候选只统计凭证有效且总分达标的审评；待复评（工艺变更）的审评不计入
+    const candidates = rows.filter(
+      (review) => review.voucherStatus === 'valid' && review.totalScore >= BLEND_CANDIDATE_SCORE,
+    ).length;
     const best = scores.length > 0 ? Math.max(...scores) : 0;
     return {
       average: averageScore(scores),
@@ -154,6 +157,9 @@ export default function ReviewBoard() {
       leafBase: values.leafBase,
       totalScore,
       blendNote: values.blendNote ?? '',
+      // 新建审评即重新审评：凭证绑定该批次当次工艺并恢复 valid；编辑则保留原凭证状态
+      voucherStatus: editingReview ? editingReview.voucherStatus : 'valid',
+      processFingerprint: editingReview ? editingReview.processFingerprint : await getProcessFingerprint(values.batchId),
     };
     try {
       if (editingReview) {
@@ -246,8 +252,20 @@ export default function ReviewBoard() {
       title: '拼配候选',
       key: 'candidate',
       width: 110,
-      render: (_: unknown, row) =>
-        row.totalScore >= BLEND_CANDIDATE_SCORE ? <Tag color="volcano">候选</Tag> : <Tag>待复评</Tag>,
+      render: (_: unknown, row) => {
+        if (row.voucherStatus !== 'valid') {
+          return (
+            <Tooltip title="做青 / 杀青 / 焙火参数已变更，本张审评凭证失效，原分仅作留档；需重新审评通过后才能恢复拼配候选资格">
+              <Tag color="orange">待复评</Tag>
+            </Tooltip>
+          );
+        }
+        return row.totalScore >= BLEND_CANDIDATE_SCORE ? (
+          <Tag color="volcano">候选</Tag>
+        ) : (
+          <Tag>未达门槛</Tag>
+        );
+      },
     },
     {
       title: '拼配去向',

@@ -29,6 +29,26 @@ export const REVIEW_SCORE_LABEL: Record<ReviewScoreKey, string> = {
 /** 总分达到该值即进入拼配候选清单 */
 export const BLEND_CANDIDATE_SCORE = 85;
 
+/**
+ * 审评凭证状态：审评凭证绑定茶青批次的当次工艺（做青 / 杀青 / 焙火参数）。
+ * - valid：凭证有效，审评分数可进入拼配候选
+ * - pending_review：待复评，工艺参数变更后凭证立即失效，原分仅作留档，撤下拼配候选
+ */
+export const REVIEW_VOUCHER_STATUS = ['valid', 'pending_review'] as const;
+export type ReviewVoucherStatus = (typeof REVIEW_VOUCHER_STATUS)[number];
+
+/** 凭证状态 → 展示文案 */
+export const REVIEW_VOUCHER_LABEL: Record<ReviewVoucherStatus, string> = {
+  valid: '凭证有效',
+  pending_review: '待复评',
+};
+
+/** 凭证状态 → 标签底色 */
+export const REVIEW_VOUCHER_COLOR: Record<ReviewVoucherStatus, string> = {
+  valid: 'green',
+  pending_review: 'orange',
+};
+
 /** 审评实体（持久化到 IndexedDB 的 reviews 表） */
 export interface Review {
   id: string;
@@ -48,6 +68,10 @@ export interface Review {
   totalScore: number;
   /** 拼配去向，例如「拼配方案 A · 40%」 */
   blendNote: string;
+  /** 审评凭证状态：工艺参数变更后置为待复评，重新审评后恢复 valid */
+  voucherStatus: ReviewVoucherStatus;
+  /** 审评凭证绑定的当次工艺指纹（做青 / 杀青 / 焙火参数的确定性哈希）；空串表示无凭证（旧数据） */
+  processFingerprint: string;
   createdAt: string;
   updatedAt: string;
 }

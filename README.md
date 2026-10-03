@@ -119,7 +119,7 @@ sologsb101-1023/
         │   └── useIdbTable.ts      # Dexie 表响应式订阅 + 增删改查封装
         ├── utils/
         │   ├── tea.ts              # 嫩度/火功枚举映射、温湿度与失水率区间判定、评分加权换算、拼配候选
-        │   ├── db.ts               # Dexie 实例、六张表、version(1) + version(2) 迁移、播种、快照导入导出
+        │   ├── db.ts               # Dexie 实例、六张表、version(1)+(2)+(3) 迁移、审评凭证失效、播种、快照导入导出
         │   └── export.ts           # 批次工艺记录 / 整库存档 / 拼配方案 JSON 导出与校验
         ├── pages/                  # 六个页面，与路由一一对应
         │   ├── GardenList.tsx      # /gardens
@@ -136,9 +136,11 @@ sologsb101-1023/
 ## 六、IndexedDB 库名与数据存储说明
 
 - **库名**：`gbtearock`（`src/utils/db.ts` 中的 `DB_NAME`）
-- **结构版本号**：`DB_VERSION = 2`
+- **结构版本号**：`DB_VERSION = 3`
   - `version(1)` 初版结构：六张分表的最小索引
   - `version(2).stores(...)` 补齐外键 / 状态 / 日期索引，并 `.upgrade()` **真实迁移历史数据**：补齐 `createdAt` / `updatedAt`、山场补齐朝向与土壤品种兜底值、批次工序状态归一化、轮次与焙火数值截断到合法区间、审评总分由「四项简单平均」改为「分项加权换算」后重算。
+  - `version(3).stores(...)` 审评表索引加入 `voucherStatus`，并 `.upgrade()` 把升级前**没有凭证的历史审评**统一置为「待复评」（`voucherStatus = 'pending_review'`）、清空工艺指纹，分数只作留档不直接沿用。
+- **审评凭证绑定当次工艺**：每条审评带 `voucherStatus`（`valid` / `pending_review`）与 `processFingerprint`（做青 / 杀青 / 焙火参数的确定性哈希）。做青轮次、杀青揉捻、焙火道次任一参数保存后（含新增 / 编辑 / 删除 / 重排 / 状态推进），该批次的审评凭证立即失效、审评标成「待复评」并从拼配候选撤下（`buildBlendCandidates` 只收 `valid` 审评），原分保留作留档；重新审评（新建审评）通过后才恢复 `valid`。失效只影响对应茶青批次，不波及其余批次；已导出的拼配方案 JSON 是浏览器外的文件，不会被改动。
 - **分表**：`gardens`、`batches`、`turns`、`fixes`、`roasts`、`reviews`（每条记录都有 `id` / `createdAt` / `updatedAt`）
 - **首屏自动播种**：`initDatabase()` 中 `if ((await db.gardens.count()) === 0) { await seedDatabase() }`，播种 3 层互相引用的演示数据 —— 3 个山场 → 4 个茶青批次 → 每个批次下 2-3 条做青轮次、1 条杀青揉捻、1-2 道焙火、1 条审评，父→子→孙贯通；播种使用固定 id + `bulkPut`，**幂等**，重复执行不会产生重复行。
 - **级联删除**：删除山场会级联删除其批次与批次下的轮次 / 杀青 / 焙火 / 审评；删除批次会级联删除其全部工序子表（均使用 `db.transaction`）。

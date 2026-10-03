@@ -30,7 +30,7 @@ import EmptyPanel from '../components/common/EmptyPanel';
 import { useIdbTable } from '../hooks/useIdbTable';
 import { useGardenStore } from '../stores/gardenStore';
 import { filterFixes, useBatchStore } from '../stores/batchStore';
-import { db } from '../utils/db';
+import { db, invalidateReviewVouchers } from '../utils/db';
 import { FIX_LIMITS, ROLL_PRESSURE_OPTIONS, type Fix, type FixDraft } from '../types/fix';
 import { batchLabel, judgeFixLevel, roundTo } from '../utils/tea';
 
@@ -124,6 +124,8 @@ export default function FixRecord() {
         await fixesTable.create(values);
         message.success('杀青揉捻记录已登记');
       }
+      // 杀青参数变更：该批次审评凭证立即失效，待复评后撤下拼配候选
+      await invalidateReviewVouchers(values.batchId);
       const nextState = await markBatchState(values.batchId, '已杀青');
       if (nextState) {
         message.success(`批次工序状态已回写为「${nextState}」`);
@@ -147,6 +149,8 @@ export default function FixRecord() {
       onOk: async () => {
         try {
           await fixesTable.remove(fix.id);
+          // 杀青记录删除：该批次审评凭证立即失效
+          await invalidateReviewVouchers(fix.batchId);
           message.success('记录已删除');
         } catch (error) {
           message.error(error instanceof Error ? error.message : '删除失败');

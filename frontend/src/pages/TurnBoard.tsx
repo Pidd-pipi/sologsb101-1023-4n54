@@ -3,6 +3,7 @@
  * - 摇青 / 静置交替时间线 + 累计时长 + 失水率走势（消费 useTurnTimeline）
  * - HTML5 原生拖拽排序：拖动卡片调整轮次顺序，落库写回 roundNo
  * - 「复制上一轮参数后微调」、参数模板保存与套用、轮次增删改与筛选
+ * - 任一参数落库后联动：该批次审评凭证失效标为「待复评」并撤出拼配候选（消费 noteProcessSaved）
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -62,6 +63,7 @@ export default function TurnBoard() {
   const [form] = Form.useForm<TurnFormValues>();
 
   const batches = useBatchStore((state) => state.batches);
+  const noteProcessSaved = useBatchStore((state) => state.noteProcessSaved);
   const gardens = useGardenStore((state) => state.gardens);
 
   const turns = useTurnStore((state) => state.turns);
@@ -103,6 +105,16 @@ export default function TurnBoard() {
 
   const activeBatch = batches.find((batch) => batch.id === activeBatchId) ?? null;
   const timeline = useTurnTimeline(activeBatchId);
+
+  /** 做青参数落库后的审评凭证联动：该批次凭证失效、标为「待复评」并撤出拼配候选 */
+  const notifyProcessSaved = async (batchId: string): Promise<void> => {
+    const affected = await noteProcessSaved(batchId);
+    if (affected > 0) {
+      message.warning(
+        `该批次做青参数已变更：${affected} 条审评凭证失效，标为「待复评」并撤出拼配候选（原分仅留档），重新审评后恢复`,
+      );
+    }
+  };
 
   const orderedTurns = useMemo(() => [...turns].sort((a, b) => a.roundNo - b.roundNo), [turns]);
   const filteredTurns = useMemo(() => filterTurns(orderedTurns, filters), [orderedTurns, filters]);
@@ -168,6 +180,7 @@ export default function TurnBoard() {
         const created = await createTurn({ ...values, batchId: activeBatchId });
         message.success(`已新增第 ${created.roundNo} 轮做青参数`);
       }
+      await notifyProcessSaved(activeBatchId);
       setModalOpen(false);
       setEditingTurn(null);
     } catch (error) {
@@ -186,11 +199,30 @@ export default function TurnBoard() {
         try {
           await deleteTurn(turn.id);
           message.success('轮次已删除并重排');
+          await notifyProcessSaved(turn.batchId);
         } catch (error) {
           message.error(error instanceof Error ? error.message : '删除失败');
         }
       },
     });
+  };
+
+  /** 快速追加一轮（复制上一轮参数） */
+  const handleQuickAppend = async (): Promise<void> => {
+    const created = await copyPreviousTurn();
+    if (!created) {
+      message.warning('请先选择要编排的批次');
+      return;
+    }
+    message.success('已按上一轮参数快速追加一轮');
+    await notifyProcessSaved(created.batchId);
+  };
+
+  /** 把参数模板套用到指定轮次 */
+  const handleApplyTemplate = async (turn: Turn): Promise<void> => {
+    await applyTemplate(turn.id);
+    message.success(`已把模板套用到第 ${turn.roundNo} 轮`);
+    await notifyProcessSaved(turn.batchId);
   };
 
   /* ------------------------------ 拖拽排序 ------------------------------ */
@@ -215,6 +247,7 @@ export default function TurnBoard() {
     setOverId(null);
     await reorderTurns(next);
     message.success('轮次顺序已保存（roundNo 已写回本地数据库）');
+    if (activeBatchId) await notifyProcessSaved(activeBatchId);
   };
 
   /* ------------------------------ 列定义 ------------------------------ */
@@ -318,10 +351,7 @@ export default function TurnBoard() {
               size="small"
               type="link"
               disabled={!template}
-              onClick={() => {
-                void applyTemplate(row.id);
-                message.success(`已把模板套用到第 ${row.roundNo} 轮`);
-              }}
+              onClick={() => void handleApplyTemplate(row)}
             >
               套用模板
             </Button>
@@ -361,10 +391,7 @@ export default function TurnBoard() {
           </Button>
           <Button
             icon={<ThunderboltOutlined />}
-            onClick={() => {
-              void copyPreviousTurn();
-              message.success('已按上一轮参数快速追加一轮');
-            }}
+            onClick={() => void handleQuickAppend()}
           >
             快速追加一轮
           </Button>

@@ -60,10 +60,12 @@ interface GardenStoreState {
   deleteGarden: (gardenId: string) => Promise<void>;
 }
 
-/** 依据山场 / 批次 / 审评计算指标 */
+/** 依据山场 / 批次 / 审评计算指标（审评均分只统计凭证有效的审评，待复评原分仅留档不计入） */
 async function buildMetrics(gardens: Garden[]): Promise<{ metrics: Record<string, GardenMetrics> }> {
   const [batches, reviews] = await Promise.all([listBatches(), listReviews()]);
-  const scoreByBatch = new Map(reviews.map((review) => [review.batchId, review.totalScore]));
+  const scoreByBatch = new Map(
+    reviews.filter((review) => review.status === '有效').map((review) => [review.batchId, review.totalScore]),
+  );
   const metrics: Record<string, GardenMetrics> = {};
   const scoresByGarden: Record<string, number[]> = {};
 

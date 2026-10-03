@@ -1,8 +1,8 @@
 /**
  * /blending 拼配方案登记与结构版本导出
- * - 按审评总分排序生成拼配候选清单，勾选毛茶并分配占比
- * - 拼配占比校验（合计必须等于 100%），校验通过后可落库写入审评记录的拼配去向
- * - 拼配方案 JSON 导出 + 整库结构版本 JSON 导出（消费 utils/export）
+ * - 按审评总分排序生成拼配候选清单（仅凭证有效的审评；待复评已撤下，重新审评后自动回到清单）
+ * - 勾选毛茶并分配占比，占比校验（合计必须等于 100%），校验通过后可落库写入审评记录的拼配去向
+ * - 拼配方案 JSON 导出 + 整库结构版本 JSON 导出（消费 utils/export）；已导出的方案文件不受后续工艺变更影响
  */
 import { useMemo, useState } from 'react';
 import { Alert, App, Button, Card, Col, Divider, Input, InputNumber, Row, Space, Table, Tag, Typography } from 'antd';
@@ -219,6 +219,7 @@ export default function BlendPlan() {
           </Typography.Title>
           <div className="page-hint">
             按审评总分组合批次并分配占比；占比合计必须等于 100%，保存后写入审评记录的「拼配去向」字段。
+            清单只列凭证有效的审评：工艺参数变更后凭证失效的批次已自动撤下，重新审评后恢复。
           </div>
         </div>
         <Space wrap>
@@ -248,7 +249,7 @@ export default function BlendPlan() {
       </div>
 
       <div className="stat-row">
-        <StatBadge label="审评记录" value={candidates.length} suffix="条" tone="primary" />
+        <StatBadge label="有效审评" value={candidates.length} suffix="条" tone="primary" hint="凭证对应当次工艺的审评才列入" />
         <StatBadge label="命中筛选" value={rows.length} suffix="条" />
         <StatBadge label="已选毛茶" value={planItems.length} suffix="款" tone="info" />
         <StatBadge
@@ -263,7 +264,7 @@ export default function BlendPlan() {
           value={candidates.filter((item) => isBlendCandidate(item.totalScore)).length}
           suffix="款"
           tone="warning"
-          hint="审评总分 ≥ 85 分"
+          hint="凭证有效且审评总分 ≥ 85 分"
         />
       </div>
 
@@ -295,7 +296,7 @@ export default function BlendPlan() {
       {candidates.length === 0 ? (
         <EmptyPanel
           title="还没有可拼配的审评数据"
-          description="先到「毛茶审评」登记香气 / 汤色 / 滋味 / 叶底得分，系统会按总分排序生成拼配候选。"
+          description="先到「毛茶审评」登记香气 / 汤色 / 滋味 / 叶底得分，系统会按总分排序生成拼配候选；若审评因工艺参数变更进入「待复评」，需重新审评恢复凭证后才会回到清单。"
         />
       ) : rows.length === 0 ? (
         <EmptyPanel

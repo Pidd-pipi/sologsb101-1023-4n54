@@ -2,6 +2,7 @@
  * /fixing 杀青揉捻记录
  * - 登记锅温、杀青时长、揉捻压力与揉捻时长、操作人（含校验规则）
  * - 登记 / 修改后回写所属批次状态为「已杀青」（工序自动流转）
+ * - 任一参数落库后联动：该批次审评凭证失效标为「待复评」并撤出拼配候选（消费 noteProcessSaved）
  * - 关键字 + 山场 / 批次 / 揉捻压力筛选，删除确认，统计徽标与空数据引导
  */
 import { useMemo, useState } from 'react';
@@ -45,11 +46,22 @@ export default function FixRecord() {
   const resetFixFilters = useBatchStore((state) => state.resetFixFilters);
   const markBatchState = useBatchStore((state) => state.markBatchState);
   const loadBatches = useBatchStore((state) => state.loadBatches);
+  const noteProcessSaved = useBatchStore((state) => state.noteProcessSaved);
 
   const fixesTable = useIdbTable<Fix>(db.fixes, { prefix: 'fix', sort: (a, b) => b.createdAt.localeCompare(a.createdAt) });
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingFix, setEditingFix] = useState<Fix | null>(null);
+
+  /** 杀青参数落库后的审评凭证联动：该批次凭证失效、标为「待复评」并撤出拼配候选 */
+  const notifyProcessSaved = async (batchId: string): Promise<void> => {
+    const affected = await noteProcessSaved(batchId);
+    if (affected > 0) {
+      message.warning(
+        `该批次杀青揉捻参数已变更：${affected} 条审评凭证失效，标为「待复评」并撤出拼配候选（原分仅留档），重新审评后恢复`,
+      );
+    }
+  };
 
   const gardenMap = useMemo(() => new Map(gardens.map((garden) => [garden.id, garden])), [gardens]);
   const batchMap = useMemo(() => new Map(batches.map((batch) => [batch.id, batch])), [batches]);
@@ -128,6 +140,7 @@ export default function FixRecord() {
       if (nextState) {
         message.success(`批次工序状态已回写为「${nextState}」`);
       }
+      await notifyProcessSaved(values.batchId);
       setModalOpen(false);
       setEditingFix(null);
       await loadBatches();
@@ -148,6 +161,7 @@ export default function FixRecord() {
         try {
           await fixesTable.remove(fix.id);
           message.success('记录已删除');
+          await notifyProcessSaved(fix.batchId);
         } catch (error) {
           message.error(error instanceof Error ? error.message : '删除失败');
         }

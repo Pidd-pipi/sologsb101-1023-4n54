@@ -26,8 +26,16 @@ export const REVIEW_SCORE_LABEL: Record<ReviewScoreKey, string> = {
   leafBase: '叶底',
 };
 
-/** 总分达到该值即进入拼配候选清单 */
+/** 总分达到该值且凭证有效即进入拼配候选清单 */
 export const BLEND_CANDIDATE_SCORE = 85;
+
+/**
+ * 审评状态枚举：
+ * - 有效：审评凭证对应当次工艺（凭证号与批次工艺版本一致），分数可参与拼配候选；
+ * - 待复评：凭证失效或缺失（工艺参数已变更 / 旧数据无凭证），原分仅留档，撤出拼配候选。
+ */
+export const REVIEW_STATUSES = ['有效', '待复评'] as const;
+export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
 
 /** 审评实体（持久化到 IndexedDB 的 reviews 表） */
 export interface Review {
@@ -46,6 +54,10 @@ export interface Review {
   leafBase: number;
   /** 加权总分 */
   totalScore: number;
+  /** 审评凭证：登记审评时绑定的批次工艺版本号（0 表示无凭证，旧数据迁移而来） */
+  processVersion: number;
+  /** 审评状态：凭证失效标为「待复评」，重新审评通过后才恢复「有效」 */
+  status: ReviewStatus;
   /** 拼配去向，例如「拼配方案 A · 40%」 */
   blendNote: string;
   createdAt: string;

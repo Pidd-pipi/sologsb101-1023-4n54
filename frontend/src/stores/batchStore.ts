@@ -19,6 +19,7 @@ import type { Garden } from '../types/garden';
 import {
   ID_PREFIX,
   createId,
+  invalidateBatchReviews,
   listBatches,
   listFixes,
   listReviews,
@@ -156,6 +157,12 @@ interface BatchStoreState {
   advanceBatchState: (batchId: string) => Promise<BatchState | null>;
   /** 工序回写：仅允许向后推进，不会回退 */
   markBatchState: (batchId: string, target: BatchState) => Promise<BatchState | null>;
+  /**
+   * 工序参数保存后的联动（做青 / 杀青 / 焙火页面在参数落库后调用）：
+   * 批次工艺版本 +1、该批次「有效」审评标为「待复评」并撤出拼配草稿。
+   * 只影响该批次；返回被撤下的审评条数（供页面提示）。
+   */
+  noteProcessSaved: (batchId: string) => Promise<number>;
   setBlendPlanName: (name: string) => void;
   toggleBlendBatch: (batchId: string, reviewId: string) => void;
   setBlendRatio: (batchId: string, ratioPct: number) => void;
@@ -245,6 +252,7 @@ export const useBatchStore = create<BatchStoreState>((set, get) => ({
       tenderness: draft.tenderness,
       weather: draft.weather.trim(),
       state: draft.state,
+      processVersion: 1,
       createdAt: stamp,
       updatedAt: stamp,
     };
@@ -294,6 +302,16 @@ export const useBatchStore = create<BatchStoreState>((set, get) => ({
     await putBatch(next);
     await get().loadBatches();
     return target;
+  },
+
+  async noteProcessSaved(batchId) {
+    const affected = await invalidateBatchReviews(batchId);
+    if (affected > 0) {
+      // 配比不得引用过时分数：把该批次从拼配草稿中撤下
+      set({ blendDraft: get().blendDraft.filter((item) => item.batchId !== batchId) });
+    }
+    await Promise.all([get().loadBatches(), get().loadReviews()]);
+    return affected;
   },
 
   setBlendPlanName(name) {

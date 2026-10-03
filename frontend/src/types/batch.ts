@@ -26,6 +26,8 @@ export interface Batch {
   weather: string;
   /** 工序状态 */
   state: BatchState;
+  /** 工艺版本号：做青 / 杀青 / 焙火任一工序参数保存后 +1，审评凭证据此校验是否对应当次工艺 */
+  processVersion: number;
   createdAt: string;
   updatedAt: string;
 }

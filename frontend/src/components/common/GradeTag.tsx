@@ -8,6 +8,7 @@ import {
   ClockCircleOutlined,
   ExperimentOutlined,
   FireOutlined,
+  SafetyCertificateOutlined,
   StarFilled,
   ThunderboltOutlined,
 } from '@ant-design/icons';
@@ -15,6 +16,7 @@ import type { Tenderness } from '../../types/batch';
 import { BATCH_STATES, type BatchState } from '../../types/batch';
 import { ROLL_PRESSURE_OPTIONS, type RollPressure } from '../../types/fix';
 import { ROAST_STATES, type FireLevel, type RoastState } from '../../types/roast';
+import { REVIEW_STATUSES, type ReviewStatus } from '../../types/review';
 import {
   BATCH_STATE_COLOR,
   FIRE_LEVEL_COLOR,
@@ -27,8 +29,8 @@ import {
   scoreStars,
 } from '../../utils/tea';
 
-/** 标签类别：嫩度 / 火功 / 评分 / 工序状态 / 焙火状态 / 揉捻压力 */
-export type GradeKind = 'tenderness' | 'fire' | 'score' | 'state' | 'roastState' | 'pressure';
+/** 标签类别：嫩度 / 火功 / 评分 / 工序状态 / 焙火状态 / 揉捻压力 / 审评凭证状态 */
+export type GradeKind = 'tenderness' | 'fire' | 'score' | 'state' | 'roastState' | 'pressure' | 'reviewStatus';
 
 export interface GradeTagProps {
   kind: GradeKind;
@@ -62,6 +64,10 @@ function isRoastState(value: string): value is RoastState {
 
 function isPressure(value: string): value is RollPressure {
   return (ROLL_PRESSURE_OPTIONS as readonly string[]).includes(value);
+}
+
+function isReviewStatus(value: string): value is ReviewStatus {
+  return (REVIEW_STATUSES as readonly string[]).includes(value);
 }
 
 /** 解析出标签文案、底色与图标 */
@@ -114,6 +120,14 @@ export function resolveGradeTag(kind: GradeKind, value: string | number): Resolv
         text: `${text}压`,
         color: isPressure(text) ? ROLL_PRESSURE_COLOR[text] : 'default',
         icon: <ThunderboltOutlined />,
+      };
+    }
+    case 'reviewStatus': {
+      const text = String(value);
+      return {
+        text: isReviewStatus(text) ? text : '待复评',
+        color: text === '有效' ? 'green' : 'orange',
+        icon: <SafetyCertificateOutlined />,
       };
     }
     default:

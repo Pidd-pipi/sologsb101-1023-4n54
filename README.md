@@ -41,10 +41,12 @@ docker compose up -d --build
 | `/turns` | 做青轮次编排 | 摇青 / 静置交替时间线与累计时长、失水率走势；**HTML5 原生拖拽排序**写回 `roundNo`；复制上一轮参数后微调、参数模板存 / 套用 |
 | `/fixing` | 杀青揉捻记录 | 锅温、杀青时长、揉捻压力与时长、操作人登记；登记后自动把批次回写为「已杀青」 |
 | `/roasting` | 焙火曲线与复焙安排 | 多道次按序排列（上移 / 下移写回 `passNo`）、足火判定（轻火 / 中火 / 足火）、复焙提醒（逾期 / 今日 / 7 日内 / 已排期） |
-| `/reviews` | 毛茶审评 | 香气 30% / 汤色 20% / 滋味 35% / 叶底 15% 加权换算总分，按总分排序并生成拼配候选清单 |
-| `/blending` | 拼配方案登记与结构版本导出 | 按总分组合批次与占比、**占比校验（合计必须 100%）**、方案 JSON 与整库结构版本 JSON 导出 |
+| `/reviews` | 毛茶审评 | 香气 30% / 汤色 20% / 滋味 35% / 叶底 15% 加权换算总分；审评凭证绑定当次工艺，凭证有效且总分 ≥ 85 才进入拼配候选清单 |
+| `/blending` | 拼配方案登记与结构版本导出 | 按总分组合批次与占比（仅凭证有效的审评）、**占比校验（合计必须 100%）**、方案 JSON 与整库结构版本 JSON 导出 |
 
 批次工序状态按工序自动流转：**做青中 → 已杀青 → 已焙火 → 已审评**（只向后推进，不回退）。
+
+**审评凭证机制**：每个批次带工艺版本号（`processVersion`），登记审评时把当次版本号快照为审评凭证。做青 / 杀青 / 焙火**任一工序参数保存**（含增删改、轮次重排、道次排序与状态推进）后，该批次工艺版本 +1，其「有效」审评的凭证立即失效：审评标为「**待复评**」并撤出拼配候选与拼配草稿，原分数仅留档不参与均分与配比；重新审评（编辑保存）后凭证绑定新版本、恢复「有效」。失效只作用于对应茶青批次，其他批次与已导出的拼配方案文件不受影响。
 
 ---
 
@@ -99,11 +101,11 @@ sologsb101-1023/
         ├── styles/main.css         # 墨绿/茶褐/炭金主题与拖拽、时间线样式
         ├── types/                  # 六个实体各一文件
         │   ├── garden.ts           # 山场：name / altitudeM / soil / cultivar / aspect
-        │   ├── batch.ts            # 茶青批次：gardenId / pickedAt / freshLeafKg / tenderness / weather / state
+        │   ├── batch.ts            # 茶青批次：gardenId / pickedAt / freshLeafKg / tenderness / weather / state / processVersion（工艺版本号）
         │   ├── turn.ts             # 做青轮次：batchId / roundNo / shakeMin / restMin / roomTempC / humidityPct / waterLossPct
         │   ├── fix.ts              # 杀青揉捻：batchId / wokTempC / fixMin / rollPressure / rollMin / operator
         │   ├── roast.ts            # 焙火：batchId / passNo / tempC / hours / charcoal / nextRoastDate / state
-        │   └── review.ts           # 审评：batchId / reviewedAt / aroma / liquorColor / taste / leafBase / totalScore / blendNote
+        │   └── review.ts           # 审评：batchId / reviewedAt / aroma / liquorColor / taste / leafBase / totalScore / processVersion（凭证）/ status / blendNote
         ├── stores/                 # Zustand：跨页状态全部放这里
         │   ├── gardenStore.ts      # 山场列表、派生指标、当前选中山场、筛选条件
         │   ├── batchStore.ts       # 批次与工序流转、杀青/审评/拼配筛选、拼配方案草稿
@@ -119,7 +121,7 @@ sologsb101-1023/
         │   └── useIdbTable.ts      # Dexie 表响应式订阅 + 增删改查封装
         ├── utils/
         │   ├── tea.ts              # 嫩度/火功枚举映射、温湿度与失水率区间判定、评分加权换算、拼配候选
-        │   ├── db.ts               # Dexie 实例、六张表、version(1) + version(2) 迁移、播种、快照导入导出
+        │   ├── db.ts               # Dexie 实例、六张表、version(1) + version(2) + version(3) 迁移、播种、快照导入导出、审评凭证失效联动
         │   └── export.ts           # 批次工艺记录 / 整库存档 / 拼配方案 JSON 导出与校验
         ├── pages/                  # 六个页面，与路由一一对应
         │   ├── GardenList.tsx      # /gardens
@@ -136,9 +138,10 @@ sologsb101-1023/
 ## 六、IndexedDB 库名与数据存储说明
 
 - **库名**：`gbtearock`（`src/utils/db.ts` 中的 `DB_NAME`）
-- **结构版本号**：`DB_VERSION = 2`
+- **结构版本号**：`DB_VERSION = 3`
   - `version(1)` 初版结构：六张分表的最小索引
   - `version(2).stores(...)` 补齐外键 / 状态 / 日期索引，并 `.upgrade()` **真实迁移历史数据**：补齐 `createdAt` / `updatedAt`、山场补齐朝向与土壤品种兜底值、批次工序状态归一化、轮次与焙火数值截断到合法区间、审评总分由「四项简单平均」改为「分项加权换算」后重算。
+  - `version(3).stores(...)` 审评表补 `status` 索引，并 `.upgrade()` 迁移：批次补工艺版本号 `processVersion`（初始 1）、审评补凭证与状态。**旧数据的审评没有凭证（`processVersion` 补 0），一律按「待复评」打开，不能直接沿用原分参与拼配**；重新审评后绑定当次工艺版本才恢复「有效」。导入旧版整库存档 JSON 时同样按此规则归一化。
 - **分表**：`gardens`、`batches`、`turns`、`fixes`、`roasts`、`reviews`（每条记录都有 `id` / `createdAt` / `updatedAt`）
 - **首屏自动播种**：`initDatabase()` 中 `if ((await db.gardens.count()) === 0) { await seedDatabase() }`，播种 3 层互相引用的演示数据 —— 3 个山场 → 4 个茶青批次 → 每个批次下 2-3 条做青轮次、1 条杀青揉捻、1-2 道焙火、1 条审评，父→子→孙贯通；播种使用固定 id + `bulkPut`，**幂等**，重复执行不会产生重复行。
 - **级联删除**：删除山场会级联删除其批次与批次下的轮次 / 杀青 / 焙火 / 审评；删除批次会级联删除其全部工序子表（均使用 `db.transaction`）。

@@ -358,12 +358,28 @@ export function matchScoreBand(score: number, bandKeys: string[]): boolean {
 
 /* ----------------------------- 拼配候选 ----------------------------- */
 
-/** 按总分由高到低生成拼配候选清单 */
+/**
+ * 审评凭证是否对应当次工艺：凭证号大于 0 且与批次当前工艺版本一致。
+ * 做青 / 杀青 / 焙火任一参数保存后批次工艺版本 +1，旧凭证即不再匹配。
+ */
+export function isReviewCredentialValid(
+  review: Pick<Review, 'processVersion'>,
+  batch: Pick<Batch, 'processVersion'> | undefined,
+): boolean {
+  if (!batch) return false;
+  if (!Number.isFinite(review.processVersion) || review.processVersion <= 0) return false;
+  return review.processVersion === batch.processVersion;
+}
+
+/** 按总分由高到低生成拼配候选清单（仅纳入凭证有效的审评；待复评的原分仅留档，不上榜） */
 export function buildBlendCandidates(reviews: Review[], batches: Batch[], gardens: Garden[]): BlendCandidate[] {
   const batchMap = new Map(batches.map((batch) => [batch.id, batch]));
   const gardenMap = new Map(gardens.map((garden) => [garden.id, garden]));
   return reviews
-    .filter((review) => batchMap.has(review.batchId))
+    .filter((review) => {
+      const batch = batchMap.get(review.batchId);
+      return batch !== undefined && review.status === '有效' && isReviewCredentialValid(review, batch);
+    })
     .map((review) => {
       const batch = batchMap.get(review.batchId) as Batch;
       const garden = gardenMap.get(batch.gardenId);

@@ -360,7 +360,7 @@ export default function GardenList() {
           value={totals.average === null ? '—' : totals.average}
           suffix="分"
           tone="warning"
-          hint="按山场下已有审评记录加权总分求平均"
+          hint="按山场下凭证有效的审评加权总分求平均（待复评不计入）"
         />
       </div>
 

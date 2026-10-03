@@ -1,7 +1,9 @@
 /**
  * IndexedDB 持久化层（Dexie 封装）· 库名 gbtearock
- * - 结构版本号 version(1) 初版 + version(DB_VERSION=2) 升级迁移（真实改写历史数据）
+ * - 结构版本号 version(1) 初版 + version(2) 升级迁移 + version(DB_VERSION=3) 审评凭证迁移
  * - 山场 / 茶青批次 / 做青轮次 / 杀青揉捻 / 焙火 / 审评 六张分表存储
+ * - 审评凭证机制：批次带工艺版本号，做青 / 杀青 / 焙火任一参数保存后版本 +1，
+ *   该批次「有效」审评立即标为「待复评」并撤出拼配候选（原分仅留档），重新审评后恢复
  * - 首屏自动播种互相引用的演示数据（山场 → 批次 → 轮次/杀青/焙火/审评 三层贯通）
  * - 纯前端应用：不依赖任何后端、数据库服务或外部接口
  */
@@ -11,14 +13,14 @@ import { BATCH_STATES, type Batch } from '../types/batch';
 import { TURN_LIMITS, type Turn } from '../types/turn';
 import type { Fix } from '../types/fix';
 import { ROAST_STATES, type Roast } from '../types/roast';
-import type { Review } from '../types/review';
+import { REVIEW_STATUSES, type Review, type ReviewStatus } from '../types/review';
 import { clampScore, weightedTotalScore } from './tea';
 
 /** 数据库名 = 英文短名 */
 export const DB_NAME = 'gbtearock';
 
 /** 当前数据结构版本号（每次调整字段结构必须 +1 并补迁移） */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 /** 主键前缀，便于在导出 JSON 里肉眼区分实体 */
 export const ID_PREFIX = {
@@ -55,7 +57,7 @@ class TeaRockDatabase extends Dexie {
     //     1) 补齐 createdAt / updatedAt；2) 山场补齐朝向、土壤与品种兜底值；
     //     3) 批次工序状态归一化；4) 轮次与焙火数值截断到合法区间；
     //     5) 审评总分由「四项简单平均」改为「分项加权换算」，迁移时按新权重重算。
-    this.version(DB_VERSION)
+    this.version(2)
       .stores({
         gardens: 'id, name, cultivar, soil, altitudeM, createdAt, updatedAt',
         batches: 'id, gardenId, pickedAt, state, tenderness, createdAt, updatedAt',
@@ -154,6 +156,37 @@ class TeaRockDatabase extends Dexie {
             });
           });
       });
+
+    // v3：审评凭证机制 —— 批次补工艺版本号、审评补凭证与状态索引。
+    //     旧数据的审评没有凭证（processVersion 补 0），一律按「待复评」打开，
+    //     不能直接沿用原分参与拼配；重新审评后才会绑定当次工艺版本恢复「有效」。
+    this.version(DB_VERSION)
+      .stores({
+        gardens: 'id, name, cultivar, soil, altitudeM, createdAt, updatedAt',
+        batches: 'id, gardenId, pickedAt, state, tenderness, createdAt, updatedAt',
+        turns: 'id, batchId, roundNo, [batchId+roundNo], createdAt, updatedAt',
+        fixes: 'id, batchId, operator, createdAt, updatedAt',
+        roasts: 'id, batchId, passNo, state, nextRoastDate, createdAt, updatedAt',
+        reviews: 'id, batchId, reviewedAt, totalScore, status, createdAt, updatedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<Batch, string>('batches')
+          .toCollection()
+          .modify((row) => {
+            if (!Number.isFinite(row.processVersion) || row.processVersion < 1) row.processVersion = 1;
+          });
+
+        await tx
+          .table<Review, string>('reviews')
+          .toCollection()
+          .modify((row) => {
+            if (!Number.isFinite(row.processVersion) || row.processVersion < 0) row.processVersion = 0;
+            if (!REVIEW_STATUSES.includes(row.status)) {
+              row.status = row.processVersion > 0 ? '有效' : '待复评';
+            }
+          });
+      });
   }
 }
 
@@ -247,6 +280,7 @@ export async function seedDatabase(): Promise<void> {
       tenderness: '一芽三叶',
       weather: '晴，北风 2 级，晨露已干',
       state: '已审评',
+      processVersion: 1,
       createdAt: stamp,
       updatedAt: stamp,
     },
@@ -258,6 +292,7 @@ export async function seedDatabase(): Promise<void> {
       tenderness: '开面采',
       weather: '多云，相对湿度 78%',
       state: '已审评',
+      processVersion: 1,
       createdAt: stamp,
       updatedAt: stamp,
     },
@@ -269,6 +304,7 @@ export async function seedDatabase(): Promise<void> {
       tenderness: '一芽两叶',
       weather: '晴热，午后 29 ℃',
       state: '已焙火',
+      processVersion: 1,
       createdAt: stamp,
       updatedAt: stamp,
     },
@@ -280,6 +316,7 @@ export async function seedDatabase(): Promise<void> {
       tenderness: '开面采',
       weather: '阴，间歇小雨，叶面有水',
       state: '做青中',
+      processVersion: 1,
       createdAt: stamp,
       updatedAt: stamp,
     },
@@ -385,7 +422,7 @@ export async function seedDatabase(): Promise<void> {
     },
   ];
 
-  const reviewSeed: Array<Omit<Review, 'totalScore'>> = [
+  const reviewSeed: Array<Omit<Review, 'totalScore' | 'processVersion' | 'status'>> = [
     {
       id: 'review-niulankeng',
       batchId: 'batch-niulankeng-0426',
@@ -423,8 +460,11 @@ export async function seedDatabase(): Promise<void> {
       updatedAt: stamp,
     },
   ];
+  // 播种审评与批次同为工艺版本 1：凭证对应当次工艺，状态「有效」
   const reviews: Review[] = reviewSeed.map((row) => ({
     ...row,
+    processVersion: 1,
+    status: '有效',
     totalScore: weightedTotalScore({
       aroma: row.aroma,
       liquorColor: row.liquorColor,
@@ -652,6 +692,20 @@ export async function exportSnapshot(): Promise<DatabaseSnapshot> {
 
 /** 用快照覆盖整库（导入存档） */
 export async function importSnapshot(snapshot: DatabaseSnapshot): Promise<void> {
+  // 批次工艺版本号兜底：旧存档没有该字段时按 1 处理
+  const batches = snapshot.batches.map((row) => ({
+    ...row,
+    processVersion: Number.isFinite(row.processVersion) && row.processVersion >= 1 ? row.processVersion : 1,
+  }));
+  const versionByBatch = new Map(batches.map((row) => [row.id, row.processVersion]));
+  // 审评凭证归一化：凭证号与批次工艺版本一致才为「有效」；
+  // 旧存档的审评没有凭证（补 0），一律按「待复评」打开，不能直接沿用原分
+  const reviews = snapshot.reviews.map((row) => {
+    const processVersion = Number.isFinite(row.processVersion) && row.processVersion >= 0 ? row.processVersion : 0;
+    const status: ReviewStatus =
+      processVersion > 0 && processVersion === versionByBatch.get(row.batchId) ? '有效' : '待复评';
+    return { ...row, processVersion, status };
+  });
   await db.transaction('rw', [db.gardens, db.batches, db.turns, db.fixes, db.roasts, db.reviews], async () => {
     await Promise.all([
       db.gardens.clear(),
@@ -662,11 +716,11 @@ export async function importSnapshot(snapshot: DatabaseSnapshot): Promise<void> 
       db.reviews.clear(),
     ]);
     await db.gardens.bulkPut(snapshot.gardens);
-    await db.batches.bulkPut(snapshot.batches);
+    await db.batches.bulkPut(batches);
     await db.turns.bulkPut(snapshot.turns);
     await db.fixes.bulkPut(snapshot.fixes);
     await db.roasts.bulkPut(snapshot.roasts);
-    await db.reviews.bulkPut(snapshot.reviews);
+    await db.reviews.bulkPut(reviews);
   });
 }
 
@@ -701,4 +755,27 @@ export async function countAll(): Promise<Record<string, number>> {
     db.reviews.count(),
   ]);
   return { gardens, batches, turns, fixes, roasts, reviews };
+}
+
+/* ---------------------------- 审评凭证联动 ---------------------------- */
+
+/**
+ * 工序参数保存后的审评凭证失效（做青 / 杀青 / 焙火任一参数落库后调用）：
+ * 同一事务内把批次工艺版本号 +1，该批次「有效」审评的凭证立即失效并标为「待复评」。
+ * 原分数保留在记录里仅作留档；只影响指定茶青批次，其他批次与已导出的拼配方案不动。
+ * 返回本次被撤下（标为待复评）的审评条数，供页面提示。
+ */
+export async function invalidateBatchReviews(batchId: string): Promise<number> {
+  return db.transaction('rw', db.batches, db.reviews, async () => {
+    const batch = await db.batches.get(batchId);
+    if (!batch) return 0;
+    const stamp = nowIso();
+    const currentVersion = Number.isFinite(batch.processVersion) ? batch.processVersion : 0;
+    await db.batches.update(batchId, { processVersion: currentVersion + 1, updatedAt: stamp });
+    return db.reviews
+      .where('batchId')
+      .equals(batchId)
+      .filter((row) => row.status === '有效')
+      .modify({ status: '待复评', updatedAt: stamp });
+  });
 }

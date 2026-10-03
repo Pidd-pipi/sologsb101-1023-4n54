@@ -2,6 +2,7 @@
  * /roasting 焙火曲线与复焙安排
  * - 多道次按序排列（上移 / 下移写回 passNo）、温度时长与炭种登记
  * - 足火判定（轻火 / 中火 / 足火）与状态流转：待焙 → 焙火中 → 已足火（足火后回写批次为已焙火）
+ * - 任一参数落库后联动：该批次审评凭证失效标为「待复评」并撤出拼配候选（消费 noteProcessSaved）
  * - 复焙提醒面板：逾期 / 今日 / 7 日内 / 已排期
  */
 import { useEffect, useMemo, useState } from 'react';
@@ -63,6 +64,7 @@ export default function RoastPlan() {
   const [form] = Form.useForm<RoastDraft>();
 
   const batches = useBatchStore((state) => state.batches);
+  const noteProcessSaved = useBatchStore((state) => state.noteProcessSaved);
   const gardens = useGardenStore((state) => state.gardens);
 
   const roasts = useRoastStore((state) => state.roasts);
@@ -89,6 +91,16 @@ export default function RoastPlan() {
     const batch = batchMap.get(batchId);
     if (!batch) return '未知批次';
     return batchLabel(batch, gardenMap.get(batch.gardenId)?.name);
+  };
+
+  /** 焙火参数落库后的审评凭证联动：该批次凭证失效、标为「待复评」并撤出拼配候选 */
+  const notifyProcessSaved = async (batchId: string): Promise<void> => {
+    const affected = await noteProcessSaved(batchId);
+    if (affected > 0) {
+      message.warning(
+        `该批次焙火参数已变更：${affected} 条审评凭证失效，标为「待复评」并撤出拼配候选（原分仅留档），重新审评后恢复`,
+      );
+    }
   };
 
   const rows = useMemo(() => filterRoasts(roasts, batches, gardens, roastFilters), [batches, gardens, roastFilters, roasts]);
@@ -179,6 +191,7 @@ export default function RoastPlan() {
         const created = await createRoast(values);
         message.success(`已新增第 ${created.passNo} 道焙火`);
       }
+      await notifyProcessSaved(values.batchId);
       setModalOpen(false);
       setEditingRoast(null);
     } catch (error) {
@@ -197,6 +210,7 @@ export default function RoastPlan() {
         try {
           await deleteRoast(roast.id);
           message.success('焙火道次已删除并重排');
+          await notifyProcessSaved(roast.batchId);
         } catch (error) {
           message.error(error instanceof Error ? error.message : '删除失败');
         }
@@ -208,9 +222,16 @@ export default function RoastPlan() {
     const next = await advanceRoastState(roast.id);
     if (next) {
       message.success(`第 ${roast.passNo} 道状态已推进到「${next}」${next === '已足火' ? '，批次已回写为「已焙火」' : ''}`);
+      await notifyProcessSaved(roast.batchId);
     } else {
       message.info('该道次已是「已足火」');
     }
+  };
+
+  /** 道次上移 / 下移（写回 passNo 后联动审评凭证失效） */
+  const handleMovePass = async (roast: Roast, direction: 'up' | 'down'): Promise<void> => {
+    await movePass(roast.id, direction);
+    await notifyProcessSaved(roast.batchId);
   };
 
   return (
@@ -360,14 +381,14 @@ export default function RoastPlan() {
                             type="text"
                             icon={<ArrowUpOutlined />}
                             disabled={index === 0}
-                            onClick={() => void movePass(roast.id, 'up')}
+                            onClick={() => void handleMovePass(roast, 'up')}
                           />
                           <Button
                             size="small"
                             type="text"
                             icon={<ArrowDownOutlined />}
                             disabled={index === group.list.length - 1}
-                            onClick={() => void movePass(roast.id, 'down')}
+                            onClick={() => void handleMovePass(roast, 'down')}
                           />
                           <Button size="small" type="link" onClick={() => void handleAdvance(roast)}>
                             推进状态
